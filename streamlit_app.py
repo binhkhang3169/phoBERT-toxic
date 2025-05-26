@@ -6,91 +6,95 @@ import re
 import os
 import requests
 import pickle
-# from tqdm import tqdm # Có thể không cần thiết nếu dùng st.progress_bar
+from urllib.parse import urlparse
 
-# --- Cấu hình Model và Các hằng số ---
-# Tên model gốc trên Hugging Face (dùng để tham chiếu kiến trúc nếu cần)
+# --- Configuration ---
 ORIGINAL_MODEL_NAME = "vinai/phobert-base"
-# Đường dẫn cục bộ đến tokenizer và config đã tải về (trong repo GitHub)
 LOCAL_CONFIG_TOKENIZER_PATH = "./phobert_local_files"
 
-# URL trực tiếp để tải file .pt từ Hugging Face (sử dụng link "raw")
-MODEL_URL = "https://huggingface.co/binhkhang3169/phoBERTtoxic/blob/main/model_best_valacc.pt"
-MODEL_FILENAME = "model_best_valacc.pt" # Tên file model sẽ lưu cục bộ
+# Fixed URL - use the direct download link from Hugging Face
+MODEL_URL = "https://huggingface.co/binhkhang3169/phoBERTtoxic/resolve/main/model_best_valacc.pt"
+MODEL_FILENAME = "model_best_valacc.pt"
 
-MAX_LEN = 256 # Phải khớp với MAX_LEN khi training
+MAX_LEN = 256
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# --- Các hàm Helper ---
+# --- Helper Functions ---
 def clean_text(text):
-    # 1. Loại bỏ các ký tự không mong muốn (giữ lại chữ cái, số và tiếng Việt có dấu)
+    """Clean and preprocess Vietnamese text"""
+    # Remove unwanted characters (keep letters, numbers, Vietnamese diacritics)
     text = re.sub(r"[^\w\sÀÁÂÃÈÉÊÌÍÒÓÔÕÙÚĂĐĨŨƠàáâãèéêìíòóôõùúăđĩũơƯĂẠẢẤẦẨẪẬẮẰẲẴẶẸẺẼỀỀỂưăạảấầẩẫậắằẳẵặẹẻẽềềểếỄỆỈỊỌỎỐỒỔỖỘỚỜỞỠỢỤỦỨỪễệỉịọỏốồổỗộớờởỡợụủứừỬỮỰỳỵỷỹýÝỲỴỶỸ]", ' ', text)
     
-    # 2. Chuyển về chữ thường trước khi loại bỏ đại từ để bắt tất cả các trường hợp (ví dụ: "Bạn", "bạn")
+    # Convert to lowercase
     text = text.lower()
 
-    # 3. Danh sách các đại từ cần loại bỏ (Tùy chọn - có thể bỏ qua nếu không muốn)
-    pronouns_to_remove = [
-        "bạn", "tôi", "cậu", "tớ", "mình",
-    ]
+    # Remove pronouns (optional)
+    pronouns_to_remove = ["bạn", "tôi", "cậu", "tớ", "mình"]
     pattern = r'\b(' + '|'.join(re.escape(pronoun) for pronoun in pronouns_to_remove) + r')\b'
     text = re.sub(pattern, '', text, flags=re.IGNORECASE)
 
-    # 4. Chuẩn hóa khoảng trắng (loại bỏ khoảng trắng thừa)
+    # Normalize whitespace
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
-# --- Định nghĩa Model ---
+# --- Model Definition ---
 class BERTClassifier(torch.nn.Module):
     def __init__(self, num_labels=2, config_path=LOCAL_CONFIG_TOKENIZER_PATH, architecture_name=ORIGINAL_MODEL_NAME):
         super(BERTClassifier, self).__init__()
+        
+        # Load config
         try:
-            # Ưu tiên tải config từ đường dẫn cục bộ
-            bert_classifier_config = RobertaConfig.from_pretrained(
-                config_path, # Tải config từ file cục bộ
-                num_labels=num_labels,
-                output_hidden_states=False,
-            )
-            st.write(f"INFO: Loaded RobertaConfig from local path: {config_path}")
-        except Exception as e_local:
-            st.warning(f"WARN: Could not load RobertaConfig from local path '{config_path}': {e_local}. Falling back to '{architecture_name}' from Hugging Face Hub.")
-            # Nếu không có file config cục bộ, thử tải từ Hugging Face Hub (cần thiết cho lần chạy đầu hoặc nếu file bị thiếu)
+            if os.path.exists(config_path):
+                bert_classifier_config = RobertaConfig.from_pretrained(
+                    config_path,
+                    num_labels=num_labels,
+                    output_hidden_states=False,
+                )
+                st.info(f"✅ Loaded config from local path: {config_path}")
+            else:
+                raise FileNotFoundError("Local config not found")
+        except Exception as e:
+            st.warning(f"⚠️ Loading config from Hugging Face: {architecture_name}")
             bert_classifier_config = RobertaConfig.from_pretrained(
                 architecture_name,
                 num_labels=num_labels,
                 output_hidden_states=False,
             )
-            st.write(f"INFO: Loaded RobertaConfig from Hugging Face Hub: {architecture_name}")
 
-        # Tải kiến trúc model (có thể vẫn dùng tên model gốc để lấy kiến trúc base)
-        # Trọng số sẽ được load từ checkpoint sau
+        # Initialize model architecture
         self.bert_classifier = RobertaForSequenceClassification.from_pretrained(
             architecture_name,
             config=bert_classifier_config
         )
-        st.write(f"INFO: Initialized RobertaForSequenceClassification with architecture from '{architecture_name}'.")
-
 
     def forward(self, input_ids, attention_mask, labels=None):
         output = self.bert_classifier(
             input_ids=input_ids,
-            token_type_ids=None, # RoBERTa không sử dụng token_type_ids
+            token_type_ids=None,  # RoBERTa doesn't use token_type_ids
             attention_mask=attention_mask,
             labels=labels
         )
         return output
 
-# --- Hàm tải file từ URL với thanh tiến trình Streamlit ---
-def download_file_from_url(url, destination_path, chunk_size=8192):
+# --- Download Function ---
+def download_file_with_progress(url, destination_path, chunk_size=8192):
+    """Download file with Streamlit progress bar"""
     try:
-        response = requests.get(url, stream=True)
-        response.raise_for_status() # Kiểm tra lỗi HTTP
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(destination_path) if os.path.dirname(destination_path) else '.', exist_ok=True)
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        response = requests.get(url, stream=True, headers=headers, timeout=30)
+        response.raise_for_status()
+        
         total_size = int(response.headers.get('content-length', 0))
         
         progress_bar = st.progress(0)
         status_text = st.empty()
-        status_text.info(f"Downloading {os.path.basename(destination_path)}...")
-
+        
         downloaded_size = 0
         with open(destination_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=chunk_size):
@@ -98,190 +102,204 @@ def download_file_from_url(url, destination_path, chunk_size=8192):
                     f.write(chunk)
                     downloaded_size += len(chunk)
                     if total_size > 0:
-                        progress = min(int((downloaded_size / total_size) * 100), 100)
+                        progress = min(downloaded_size / total_size, 1.0)
                         progress_bar.progress(progress)
+                        status_text.text(f"Downloaded: {downloaded_size / (1024*1024):.1f} MB / {total_size / (1024*1024):.1f} MB")
         
-        status_text.success(f"Download complete: {os.path.basename(destination_path)}")
-        progress_bar.empty() # Xóa thanh progress sau khi hoàn tất
+        progress_bar.empty()
+        status_text.success(f"✅ Download completed: {os.path.basename(destination_path)}")
         return True
-    except requests.exceptions.RequestException as e:
-        st.error(f"Error downloading model: {e}")
-        if os.path.exists(destination_path):
-            os.remove(destination_path) # Xóa file nếu tải lỗi
-        return False
+        
     except Exception as e:
-        st.error(f"An unexpected error occurred during download: {e}")
+        st.error(f"❌ Download failed: {str(e)}")
         if os.path.exists(destination_path):
             os.remove(destination_path)
         return False
 
-# --- Hàm tải Model và Tokenizer (Cached) ---
-@st.cache_resource # Sử dụng cache_resource cho model và tokenizer
+# --- Load Model and Tokenizer ---
+@st.cache_resource
 def load_model_and_tokenizer():
-    st.write("Attempting to load model and tokenizer...")
-    local_model_path = MODEL_FILENAME
-
-    # 1. Tải model weights nếu chưa có
-    if not os.path.exists(local_model_path):
-        st.info(f"Model file '{local_model_path}' not found locally. Attempting to download from {MODEL_URL}...")
-        if not MODEL_URL:
-            st.error("MODEL_URL is not configured.")
-            st.stop()
-        if not download_file_from_url(MODEL_URL, local_model_path):
-            st.error("Failed to download model weights. Please check the URL and network connection.")
-            st.stop()
-    else:
-        st.write(f"Found local model weights: {local_model_path}")
-
-    # 2. Tải tokenizer
-    try:
-        # Ưu tiên tải tokenizer từ đường dẫn cục bộ
-        phobert_tokenizer = AutoTokenizer.from_pretrained(LOCAL_CONFIG_TOKENIZER_PATH, use_fast=False)
-        st.write(f"INFO: Loaded PhoBERT Tokenizer from local path: {LOCAL_CONFIG_TOKENIZER_PATH}")
-    except Exception as e_local_tokenizer:
-        st.warning(f"WARN: Could not load PhoBERT Tokenizer from local path '{LOCAL_CONFIG_TOKENIZER_PATH}': {e_local_tokenizer}. Falling back to '{ORIGINAL_MODEL_NAME}' from Hugging Face Hub.")
-        # Nếu không có file tokenizer cục bộ, thử tải từ Hugging Face Hub
-        try:
-            phobert_tokenizer = AutoTokenizer.from_pretrained(ORIGINAL_MODEL_NAME, use_fast=False)
-            st.write(f"INFO: Loaded PhoBERT Tokenizer from Hugging Face Hub: {ORIGINAL_MODEL_NAME}")
-        except Exception as e_hub_tokenizer:
-            st.error(f"FATAL: Could not load PhoBERT Tokenizer from local path or Hugging Face Hub. Error (Hub): {e_hub_tokenizer}")
-            st.stop()
-            return None, None
-
-
-    # 3. Khởi tạo cấu trúc model và tải trọng số
-    try:
-        phobert_model_structure = BERTClassifier(
-            num_labels=2, 
-            config_path=LOCAL_CONFIG_TOKENIZER_PATH, # Truyền đường dẫn config cục bộ
-            architecture_name=ORIGINAL_MODEL_NAME
-        )
-        
-        st.write(f"Loading checkpoint from: {local_model_path} to device: {DEVICE}")
-        try:
-            checkpoint = torch.load(local_model_path, map_location=DEVICE, weights_only=False)
-            st.write("INFO: Successfully loaded checkpoint with weights_only=False.")
-        except AttributeError as e_attr: # Có thể xảy ra với PyTorch < 2.6 không có weights_only
-            st.warning(f"WARN: torch.load with weights_only=False failed ({e_attr}), trying without weights_only (older PyTorch behavior).")
-            checkpoint = torch.load(local_model_path, map_location=DEVICE)
-            st.write("INFO: Successfully loaded checkpoint without weights_only argument.")
-        except pickle.UnpicklingError as e_pickle:
-            st.error(f"FATAL: UnpicklingError while loading checkpoint: {e_pickle}")
-            st.error("The model file might be corrupted or saved in an incompatible way.")
-            st.stop()
-            return None, None # Dừng hẳn nếu không load được
-        
-        # Kiểm tra định dạng checkpoint
-        if 'model_state_dict' in checkpoint:
-            phobert_model_structure.load_state_dict(checkpoint['model_state_dict'])
-            st.write("Loaded model_state_dict from checkpoint.")
-        elif isinstance(checkpoint, dict) and all(isinstance(k, str) for k in checkpoint.keys()):
-            # Giả định checkpoint là một state_dict trực tiếp
-            phobert_model_structure.load_state_dict(checkpoint)
-            st.write("Loaded state_dict directly from checkpoint.")
-        else:
-            st.error("Model checkpoint format not recognized. Expected a dict or a dict with 'model_state_dict' key.")
-            st.stop()
-            return None, None
-            
-        phobert_model = phobert_model_structure.to(DEVICE)
-        phobert_model.eval() # Chuyển model sang chế độ inference
-        st.write("Model loaded and set to evaluation mode successfully.")
-        return phobert_model, phobert_tokenizer
-        
-    except Exception as e:
-        st.error(f"Error loading model structure or weights: {e}")
-        st.exception(e) # In ra traceback đầy đủ cho debug
-        st.stop()
-        return None, None
-
-# --- Tải model và tokenizer khi ứng dụng khởi chạy ---
-# Các thông báo st.write() bên trong load_model_and_tokenizer sẽ giúp theo dõi tiến trình
-phobert_model, phobert_tokenizer = load_model_and_tokenizer()
-
-# --- Giao diện người dùng Streamlit ---
-st.set_page_config(page_title="Toxic Comment Detector", layout="centered")
-st.title("Toxic Comment Detector")
-st.markdown("Enter Vietnamese text below to check if it's toxic or non-toxic.")
-st.markdown(f"Running on device: `{DEVICE}`")
-if phobert_model is None or phobert_tokenizer is None:
-    st.error("Model or Tokenizer not loaded. Application cannot proceed.")
-    st.stop()
-
-# Khởi tạo session state nếu chưa có
-if 'text_input' not in st.session_state:
-    st.session_state.text_input = ""
-if 'prediction_result' not in st.session_state:
-    st.session_state.prediction_result = None
-if 'confidence_score' not in st.session_state:
-    st.session_state.confidence_score = None
-if 'submitted_text' not in st.session_state: # Lưu lại text đã submit để hiển thị lại
-    st.session_state.submitted_text = ""
-
-
-user_input = st.text_area("Enter your comment here:", 
-                            value=st.session_state.text_input, 
-                            height=150, 
-                            placeholder="Nhập bình luận tiếng Việt của bạn ở đây...",
-                            key="main_text_input_area" # Thêm key để tránh lỗi nếu có nhiều text_area
-                            )
-
-if st.button("Check Toxicity", use_container_width=True, type="primary"):
-    if not user_input.strip():
-        st.warning("Please enter some text to analyze.")
-        st.session_state.prediction_result = None
-        st.session_state.confidence_score = None
-        st.session_state.submitted_text = ""
-    else:
-        st.session_state.text_input = user_input # Lưu lại nội dung người dùng nhập
-        st.session_state.submitted_text = user_input # Lưu text để hiển thị lại sau khi xử lý
-
-        with st.spinner("Analyzing..."):
-            cleaned_text = clean_text(user_input)
-            
-            # Tokenize sử dụng tokenizer của Hugging Face (tự động padding và tạo attention mask)
-            inputs = phobert_tokenizer(
-                cleaned_text,
-                add_special_tokens=True,       # Thêm [CLS] và [SEP] (hoặc <s>, </s> cho RoBERTa)
-                max_length=MAX_LEN,            # Giới hạn độ dài tối đa
-                padding='max_length',          # Pad đến max_length
-                truncation=True,               # Cắt nếu dài hơn max_length
-                return_attention_mask=True,    # Trả về attention_mask
-                return_tensors='pt'            # Trả về PyTorch tensors
-            )
-
-            input_ids_tensor = inputs['input_ids'].to(DEVICE)
-            attention_mask_tensor = inputs['attention_mask'].to(DEVICE)
-
-            with torch.no_grad(): # Không tính gradient khi inference
-                outputs = phobert_model(input_ids_tensor, attention_mask=attention_mask_tensor)
-            
-            logits = outputs[0] if isinstance(outputs, tuple) else outputs.logits # Lấy logits từ output của model
-            probabilities = torch.nn.functional.softmax(logits, dim=1) # Tính xác suất
-            confidence, predicted_class_idx = torch.max(probabilities, dim=1) # Lấy lớp có xác suất cao nhất
-
-            # Giả sử: 0 là Non-toxic, 1 là Toxic (cần khớp với lúc training)
-            predicted_label = "Toxic" if predicted_class_idx.item() == 1 else "Non-toxic" 
-            
-            st.session_state.prediction_result = predicted_label
-            st.session_state.confidence_score = confidence.item()
-
-# Hiển thị kết quả nếu có
-if st.session_state.prediction_result and st.session_state.submitted_text:
-    st.markdown("---")
-    st.subheader("Result:")
-    st.markdown(f"**Your input:**")
-    # Dùng st.text hoặc st.markdown trong block quote để hiển thị an toàn hơn
-    st.markdown(f"> _{st.session_state.submitted_text}_")
-
-
-    if st.session_state.prediction_result == "Toxic":
-        st.error(f"**Prediction:** {st.session_state.prediction_result}")
-    else:
-        st.success(f"**Prediction:** {st.session_state.prediction_result}")
+    """Load model and tokenizer with caching"""
     
-    st.info(f"**Confidence:** {st.session_state.confidence_score*100:.2f}%")
+    with st.spinner("🔄 Loading model and tokenizer..."):
+        local_model_path = MODEL_FILENAME
 
-st.markdown("---")
-st.markdown("Powered by [Streamlit](https://streamlit.io) | Model based on [PhoBERT](https://huggingface.co/vinai/phobert-base) | Weights by [binhkhang3169](https://huggingface.co/binhkhang3169)")
+        # Download model if not exists
+        if not os.path.exists(local_model_path):
+            st.info(f"📥 Downloading model from Hugging Face...")
+            if not download_file_with_progress(MODEL_URL, local_model_path):
+                st.error("❌ Failed to download model. Please check your internet connection.")
+                st.stop()
+        else:
+            st.success(f"✅ Found local model: {local_model_path}")
+
+        # Load tokenizer
+        try:
+            if os.path.exists(LOCAL_CONFIG_TOKENIZER_PATH):
+                tokenizer = AutoTokenizer.from_pretrained(LOCAL_CONFIG_TOKENIZER_PATH, use_fast=False)
+                st.success(f"✅ Loaded tokenizer from local path")
+            else:
+                tokenizer = AutoTokenizer.from_pretrained(ORIGINAL_MODEL_NAME, use_fast=False)
+                st.success(f"✅ Loaded tokenizer from Hugging Face")
+        except Exception as e:
+            st.error(f"❌ Failed to load tokenizer: {str(e)}")
+            st.stop()
+
+        # Load model
+        try:
+            # Initialize model structure
+            model = BERTClassifier(num_labels=2)
+            
+            # Load checkpoint
+            st.info(f"📂 Loading checkpoint from: {local_model_path}")
+            
+            try:
+                checkpoint = torch.load(local_model_path, map_location=DEVICE, weights_only=False)
+            except TypeError:
+                # For older PyTorch versions
+                checkpoint = torch.load(local_model_path, map_location=DEVICE)
+            
+            # Load state dict
+            if 'model_state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['model_state_dict'])
+                st.success("✅ Loaded model_state_dict from checkpoint")
+            elif isinstance(checkpoint, dict):
+                model.load_state_dict(checkpoint)
+                st.success("✅ Loaded state_dict directly from checkpoint")
+            else:
+                st.error("❌ Unrecognized checkpoint format")
+                st.stop()
+            
+            model = model.to(DEVICE)
+            model.eval()
+            st.success("✅ Model loaded and ready for inference")
+            
+            return model, tokenizer
+            
+        except Exception as e:
+            st.error(f"❌ Error loading model: {str(e)}")
+            st.exception(e)
+            st.stop()
+
+# --- Main App ---
+def main():
+    st.set_page_config(
+        page_title="Vietnamese Toxic Comment Detector",
+        page_icon="🛡️",
+        layout="centered"
+    )
+    
+    st.title("🛡️ Vietnamese Toxic Comment Detector")
+    st.markdown("Enter Vietnamese text below to check if it contains toxic content.")
+    st.markdown(f"**Device:** `{DEVICE}` | **Max Length:** `{MAX_LEN}`")
+    
+    # Load model and tokenizer
+    model, tokenizer = load_model_and_tokenizer()
+    
+    # Initialize session state
+    if 'prediction_history' not in st.session_state:
+        st.session_state.prediction_history = []
+    
+    # User input
+    user_input = st.text_area(
+        "Enter your Vietnamese comment here:",
+        height=150,
+        placeholder="Nhập bình luận tiếng Việt của bạn ở đây...",
+        max_chars=500
+    )
+    
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        analyze_button = st.button("🔍 Analyze Text", type="primary", use_container_width=True)
+    
+    with col2:
+        clear_button = st.button("🗑️ Clear", use_container_width=True)
+    
+    if clear_button:
+        st.session_state.prediction_history = []
+        st.rerun()
+    
+    if analyze_button:
+        if not user_input.strip():
+            st.warning("⚠️ Please enter some text to analyze.")
+        else:
+            with st.spinner("🔄 Analyzing..."):
+                # Clean text
+                cleaned_text = clean_text(user_input)
+                
+                # Tokenize
+                inputs = tokenizer(
+                    cleaned_text,
+                    add_special_tokens=True,
+                    max_length=MAX_LEN,
+                    padding='max_length',
+                    truncation=True,
+                    return_attention_mask=True,
+                    return_tensors='pt'
+                )
+                
+                input_ids = inputs['input_ids'].to(DEVICE)
+                attention_mask = inputs['attention_mask'].to(DEVICE)
+                
+                # Predict
+                with torch.no_grad():
+                    outputs = model(input_ids, attention_mask=attention_mask)
+                
+                logits = outputs.logits if hasattr(outputs, 'logits') else outputs[0]
+                probabilities = torch.nn.functional.softmax(logits, dim=1)
+                confidence, predicted_class = torch.max(probabilities, dim=1)
+                
+                # Results
+                is_toxic = predicted_class.item() == 1
+                confidence_score = confidence.item()
+                
+                # Store in history
+                result = {
+                    'text': user_input,
+                    'is_toxic': is_toxic,
+                    'confidence': confidence_score,
+                    'cleaned_text': cleaned_text
+                }
+                st.session_state.prediction_history.insert(0, result)
+                
+                # Keep only last 5 results
+                if len(st.session_state.prediction_history) > 5:
+                    st.session_state.prediction_history = st.session_state.prediction_history[:5]
+    
+    # Display results
+    if st.session_state.prediction_history:
+        st.markdown("---")
+        st.subheader("📊 Analysis Results")
+        
+        for i, result in enumerate(st.session_state.prediction_history):
+            with st.container():
+                st.markdown(f"**Result #{i+1}:**")
+                
+                # Display text
+                st.markdown(f"*Input:* {result['text']}")
+                
+                # Display prediction
+                if result['is_toxic']:
+                    st.error(f"🚨 **Toxic** (Confidence: {result['confidence']*100:.1f}%)")
+                else:
+                    st.success(f"✅ **Non-toxic** (Confidence: {result['confidence']*100:.1f}%)")
+                
+                # Show cleaned text if different
+                if result['cleaned_text'] != result['text'].lower():
+                    with st.expander("Show processed text"):
+                        st.code(result['cleaned_text'])
+                
+                if i < len(st.session_state.prediction_history) - 1:
+                    st.markdown("---")
+    
+    # Footer
+    st.markdown("---")
+    st.markdown(
+        "**Powered by:** [PhoBERT](https://huggingface.co/vinai/phobert-base) | "
+        "**Model by:** [binhkhang3169](https://huggingface.co/binhkhang3169) | "
+        "**Built with:** [Streamlit](https://streamlit.io)"
+    )
+
+if __name__ == "__main__":
+    main()
