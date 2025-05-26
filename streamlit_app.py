@@ -5,6 +5,7 @@ from transformers import AutoTokenizer, RobertaConfig, RobertaForSequenceClassif
 import re
 import os
 import requests
+import pickle
 # from tqdm import tqdm # Có thể không cần thiết nếu dùng st.progress_bar
 
 # --- Cấu hình Model và Các hằng số ---
