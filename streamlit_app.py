@@ -158,7 +158,18 @@ def load_model_and_tokenizer():
         )
         
         st.write(f"Loading checkpoint from: {local_model_path} to device: {DEVICE}")
-        checkpoint = torch.load(local_model_path, map_location=DEVICE)
+        try:
+            checkpoint = torch.load(local_model_path, map_location=DEVICE, weights_only=False)
+            st.write("INFO: Successfully loaded checkpoint with weights_only=False.")
+        except AttributeError as e_attr: # Có thể xảy ra với PyTorch < 2.6 không có weights_only
+            st.warning(f"WARN: torch.load with weights_only=False failed ({e_attr}), trying without weights_only (older PyTorch behavior).")
+            checkpoint = torch.load(local_model_path, map_location=DEVICE)
+            st.write("INFO: Successfully loaded checkpoint without weights_only argument.")
+        except pickle.UnpicklingError as e_pickle:
+            st.error(f"FATAL: UnpicklingError while loading checkpoint: {e_pickle}")
+            st.error("The model file might be corrupted or saved in an incompatible way.")
+            st.stop()
+            return None, None # Dừng hẳn nếu không load được
         
         # Kiểm tra định dạng checkpoint
         if 'model_state_dict' in checkpoint:
