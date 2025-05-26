@@ -15,7 +15,7 @@ ORIGINAL_MODEL_NAME = "vinai/phobert-base"
 LOCAL_CONFIG_TOKENIZER_PATH = "./phobert_local_files"
 
 # URL trực tiếp để tải file .pt từ Hugging Face (sử dụng link "raw")
-MODEL_URL = "https://huggingface.co/binhkhang3169/phoBERTtoxic/raw/main/model_best_valacc.pt"
+MODEL_URL = "https://huggingface.co/binhkhang3169/phoBERTtoxic/blob/main/model_best_valacc.pt"
 MODEL_FILENAME = "model_best_valacc.pt" # Tên file model sẽ lưu cục bộ
 
 MAX_LEN = 256 # Phải khớp với MAX_LEN khi training
