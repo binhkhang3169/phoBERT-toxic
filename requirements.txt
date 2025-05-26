@@ -2,7 +2,6 @@ streamlit
 torch
 numpy
 transformers
-tensorflow
 requests
 tqdm
 regex
