@@ -1,7 +1,7 @@
-streamlit
-torch
-numpy
-transformers
-requests
-tqdm
-regex
+streamlit==1.34.1 
+torch==2.3.0 
+numpy==1.26.4
+transformers==4.41.2
+requests==2.31.0
+tqdm==4.66.2
+regex==2023.12.25
